@@ -11,16 +11,15 @@ pub fn main() !void {
 
     var a = gpa.allocator();
 
-    var args = try std.process.argsAlloc(a);
+    const args = try std.process.argsAlloc(a);
     defer std.process.argsFree(a, args);
 
     if (args.len < 2) {
         std.log.err("Please provide a wasm file on the command line!\n", .{});
-        std.os.exit(1);
+        return error.NoArgs;
     }
 
     std.log.info("Loading wasm file {s}!\n", .{args[1]});
-
 
     var env = wasm3.Environment.init();
     defer env.deinit();
@@ -29,7 +28,7 @@ pub fn main() !void {
     defer rt.deinit();
     errdefer rt.printError();
 
-    var mod_bytes = try std.fs.cwd().readFileAlloc(a, args[1], 512 * kib);
+    const mod_bytes = try std.fs.cwd().readFileAlloc(a, args[1], 512 * kib);
     defer a.free(mod_bytes);
     var mod = try env.parseModule(mod_bytes);
     try rt.loadModule(mod);
@@ -41,34 +40,34 @@ pub fn main() !void {
             return lh + rh;
         }
         pub fn getArgv0(allocator: *std.mem.Allocator, str: wasm3.SandboxPtr(u8), max_len: u32) callconv(.Inline) u32 {
-            var in_buf = str.slice(max_len);
+            const in_buf = str.slice(max_len);
 
             // Version <= 9.0 has you pass the allocator to args_iter.next(), but
             //         >= 10.0 has you pass the allocator to the args iterator.
-            if (@hasDecl(std.process, "argsWithAllocator") and @typeInfo(@TypeOf(std.process.ArgIterator.next)).Fn.args.len == 1) {
+            if (@hasDecl(std.process, "argsWithAllocator") and @typeInfo(@TypeOf(std.process.ArgIterator.next)).@"fn".params.len == 1) {
                 // Version >= 10.0, pass the allocator to the args iterator.
 
                 var arg_iter = std.process.argsWithAllocator(allocator.*) catch return 0;
                 defer arg_iter.deinit();
             
-                var first_arg = arg_iter.next() orelse return 0;
+                const first_arg = arg_iter.next() orelse return 0;
 
                 if (first_arg.len > in_buf.len) return 0;
-                std.mem.copy(u8, in_buf, first_arg);
+                std.mem.copyForwards(u8, in_buf, first_arg);
 
-                return @truncate(u32, first_arg.len);
+                return @truncate(first_arg.len);
             } else {
                 // Version <= 9.0, pass the allocator to args_iter.next().
 
                 var arg_iter = std.process.args();
             
-                var first_arg = (arg_iter.next(allocator.*) orelse return 0) catch return 0;
+                const first_arg = (arg_iter.next(allocator.*) orelse return 0) catch return 0;
                 defer allocator.free(first_arg);
 
                 if (first_arg.len > in_buf.len) return 0;
-                std.mem.copy(u8, in_buf, first_arg);
+                @memcpy(in_buf, first_arg);
 
-                return @truncate(u32, first_arg.len);
+                return @truncate(first_arg.len);
             }
         }
     }, &a);
@@ -93,12 +92,12 @@ pub fn main() !void {
 
     std.debug.print("Allocated buffer!\n{any}\n", .{buffer});
 
-    std.mem.copy(u8, buffer, my_string);
+    @memcpy(buffer[0..my_string.len], my_string);
     buffer[my_string.len] = 0;
 
     try print_fn.call(void, .{buffer_np});
 
-    var optionally_null_np: ?wasm3.SandboxPtr(u8) = null;
+    const optionally_null_np: ?wasm3.SandboxPtr(u8) = null;
     try print_fn.call(void, .{optionally_null_np});
 
     try test_globals(a);
@@ -116,7 +115,7 @@ pub fn test_globals(a: std.mem.Allocator) !void {
     defer rt.deinit();
     errdefer rt.printError();
 
-    var mod_bytes = try std.fs.cwd().readFileAlloc(a, "example/global.wasm", 512 * kib);
+    const mod_bytes = try std.fs.cwd().readFileAlloc(a, "example/global.wasm", 512 * kib);
     defer a.free(mod_bytes);
     var mod = try env.parseModule(mod_bytes);
     try rt.loadModule(mod);

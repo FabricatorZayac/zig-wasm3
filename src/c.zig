@@ -29,7 +29,7 @@ pub const M3BacktraceInfo = extern struct {
 
     pub fn lastFrameTruncated(self: *M3BacktraceInfo) callconv(.Inline) bool {
         const std = @import("std");
-        const last_frame = @ptrToInt(self.lastFrame);
+        const last_frame = @intFromPtr(self.lastFrame);
 
         // M3_BACKTRACE_TRUNCATED is defined as (void*)(SIZE_MAX)
         return last_frame == std.math.maxInt(usize);

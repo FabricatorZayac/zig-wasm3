@@ -1,40 +1,49 @@
 const std = @import("std");
-const Builder = std.build.Builder;
 
-pub const pkgs = @import("gyro").pkgs;
-const self_plugin = @import("gyro_plugin.zig");
-
-pub fn build(b: *Builder) void {
-
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const wasm3 = b.dependency("wasm3", .{ .libm3 = true });
+    wasm3.artifact("m3").root_module.addCMacro("d_m3HasWASI", "1");
 
-    const exe = b.addExecutable("example", "example/test.zig");
-    exe.setBuildMode(mode);
-    exe.setTarget(target);
-    exe.install();
+    const lib_mod = b.addModule("wasm3", .{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lib_mod.addCSourceFile(.{
+        .file = b.path("src/wasm3_extra.c"),
+    });
+    lib_mod.addIncludePath(wasm3.path("source"));
 
-    const wasm_build = b.addSharedLibrary("wasm_example", "example/wasm_src.zig", .unversioned);
-    wasm_build.target = std.zig.CrossTarget {
-        .cpu_arch = .wasm32,
-        .os_tag = .wasi,
+    const wasm_build = b.addExecutable(.{
+        .name = "wasm_example",
+        .root_source_file = b.path("example/wasm_src.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi }),
+        .optimize = .ReleaseSmall,
+    });
+    wasm_build.entry = .disabled;
+    wasm_build.root_module.export_symbol_names = &.{
+        "allocBytes",
+        "printStringZ",
+        "addFive",
+        "main",
     };
-    wasm_build.out_filename = "wasm_example.wasm";
+    b.installArtifact(wasm_build);
 
-    self_plugin.addTo(exe);
-    exe.addPackage(self_plugin.pkg(null));
+    const exe = b.addExecutable(.{
+        .name = "zig-wasm3-test",
+        .root_source_file = b.path("example/test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.linkLibC();
+    exe.root_module.addImport("wasm3", lib_mod);
+    exe.linkLibrary(wasm3.artifact("m3"));
+    b.installArtifact(exe);
 
-    exe.install();
-    wasm_build.install();
-
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addArtifactArg(wasm_build);
     if (b.args) |args| {

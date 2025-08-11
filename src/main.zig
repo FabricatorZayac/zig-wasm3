@@ -10,7 +10,7 @@ fn createErrorMappingFunctions() type {
     const match_list = comptime get_results: {
         const Declaration = std.builtin.Type.Declaration;
         var result_values: []const [2][]const u8 = &[0][2][]const u8{};
-        for (@typeInfo(c).Struct.decls) |decl| {
+        for (@typeInfo(c).@"struct".decls) |decl| {
             const d: Declaration = decl;
             if (std.mem.startsWith(u8, d.name, "m3Err_")) {
                 if (!std.mem.eql(u8, d.name, "m3Err_none")) {
@@ -128,9 +128,9 @@ pub const Runtime = struct {
     }
     pub fn getMemory(this: Runtime, memory_index: u32) callconv(.Inline) ?[]u8 {
         var size: u32 = 0;
-        var mem = c.m3_GetMemory(this.impl, &size, memory_index);
+        const mem = c.m3_GetMemory(this.impl, &size, memory_index);
         if (mem) |valid| {
-            return valid[0..@intCast(usize, size)];
+            return valid[0..@intCast(size)];
         }
         return null;
     }
@@ -166,7 +166,7 @@ pub const Runtime = struct {
         return "nullptr";
     }
     pub fn printError(this: Runtime) callconv(.Inline) void {
-        var info = this.getErrorInfo();
+        const info = this.getErrorInfo();
         this.resetErrorInfo();
         std.log.err("Wasm3 error: {s} @ {s}:{d}\n", .{ span(info.message), span(info.file), info.line });
     }
@@ -200,7 +200,7 @@ pub const Function = struct {
         }
 
         const ArgsType = @TypeOf(args);
-        if (@typeInfo(ArgsType) != .Struct) {
+        if (@typeInfo(ArgsType) != .@"struct") {
             @compileError("Expected tuple or struct argument, found " ++ @typeName(ArgsType));
         }
         const fields_info = std.meta.fields(ArgsType);
@@ -210,7 +210,7 @@ pub const Function = struct {
         const num_pointers = comptime ptr_count: {
             var num_ptrs: comptime_int = 0;
             var i: comptime_int = 0;
-            inline while (i < count) : (i += 1) {
+            while (i < count) : (i += 1) {
                 const ArgType = @TypeOf(args[i]);
                 if (isSandboxPtr(ArgType) or isOptSandboxPtr(ArgType)) {
                     num_ptrs += 1;
@@ -221,22 +221,21 @@ pub const Function = struct {
         var pointer_values: [num_pointers]u32 = undefined;
 
         var arg_arr: [count]?*const anyopaque = undefined;
-        comptime var i: comptime_int = 0;
-        inline while (i < count) : (i += 1) {
-            const ArgType = @TypeOf(args[i]);
+        inline for (args, 0..) |arg, i| {
+            const ArgType = @TypeOf(arg);
             if (comptime (isSandboxPtr(ArgType) or isOptSandboxPtr(ArgType))) {
                 if(pointer_values.len > 0) {
-                    pointer_values[ptr_i] = toLocalPtr(args[i]);
-                    arg_arr[i] = @ptrCast(?*const anyopaque, &pointer_values[ptr_i]);
+                    pointer_values[ptr_i] = toLocalPtr(arg);
+                    arg_arr[i] = @ptrCast(&pointer_values[ptr_i]);
                     ptr_i += 1;
                 } else {
                     unreachable;
                 }
             } else {
-                arg_arr[i] = @ptrCast(?*const anyopaque, &args[i]);
+                arg_arr[i] = @ptrCast(&arg);
             }
         }
-        try ErrorMapping.mapError(c.m3_Call(this.impl, @intCast(u32, count), if (count == 0) null else &arg_arr));
+        try ErrorMapping.mapError(c.m3_Call(this.impl, @intCast(count), if (count == 0) null else &arg_arr));
 
         if (RetType == void) return;
 
@@ -247,20 +246,20 @@ pub const Function = struct {
 
         const runtime_ptr = Extensions.wasm3_addon_get_fn_rt(this.impl);
         var return_data_buffer: u64 = undefined;
-        var return_ptr: *anyopaque = @ptrCast(*anyopaque, &return_data_buffer);
-        try ErrorMapping.mapError(c.m3_GetResults(this.impl, 1, &[1]?*anyopaque{return_ptr}));
+        const return_ptr: *anyopaque = @ptrCast(&return_data_buffer);
+        try ErrorMapping.mapError(c.m3_GetResults(this.impl, 1, @constCast(&[1]?*anyopaque{return_ptr})));
 
         if (comptime (isSandboxPtr(RetType) or isOptSandboxPtr(RetType))) {
             const mem_ptr = Extensions.wasm3_addon_get_runtime_mem_ptr(runtime_ptr);
             return fromLocalPtr(
                 RetType,
-                @ptrCast(*u32, @alignCast(@alignOf(u32), return_ptr)).*,
-                @ptrToInt(mem_ptr),
+                @as(*u32, @alignCast(@ptrCast(return_ptr))).*,
+                @intFromPtr(mem_ptr),
             );
         } else {
             switch (RetType) {
                 i8, i16, i32, i64, u8, u16, u32, u64, f32, f64 => {
-                    return @ptrCast(*RetType, @alignCast(@alignOf(RetType), return_ptr)).*;
+                    return @as(*RetType, @ptrCast(@alignCast(return_ptr))).*;
                 },
                 else => {
                     @compileLog("Erroring anyway, is this wrong?", isSandboxPtr(RetType) or isOptSandboxPtr(RetType));
@@ -285,14 +284,14 @@ pub const Function = struct {
 
 fn isSandboxPtr(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .Struct => @hasDecl(T, "_is_wasm3_local_ptr"),
+        .@"struct" => @hasDecl(T, "_is_wasm3_local_ptr"),
         else => false,
     };
 }
 
 fn isOptSandboxPtr(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .Optional => |opt| isSandboxPtr(opt.child),
+        .optional => |opt| isSandboxPtr(opt.child),
         else => false,
     };
 }
@@ -313,20 +312,20 @@ pub fn SandboxPtr(comptime T: type) type {
         const Self = @This();
 
         pub fn localPtr(this: Self) callconv(.Inline) u32 {
-            return @intCast(u32, @ptrToInt(this.host_ptr) - this.local_heap);
+            return @intCast(@intFromPtr(this.host_ptr) - this.local_heap);
         }
         pub fn write(this: Self, val: T) callconv(.Inline) void {
-            std.mem.writeIntLittle(T, std.mem.asBytes(this.host_ptr), val);
+            std.mem.writeInt(T, std.mem.asBytes(this.host_ptr), val, .little);
         }
         pub fn read(this: Self) callconv(.Inline) T {
-            return std.mem.readIntLittle(T, std.mem.asBytes(this.host_ptr));
+            return std.mem.readInt(T, std.mem.asBytes(this.host_ptr), .little);
         }
         fn offsetBy(this: Self, offset: i64) callconv(.Inline) *T {
-            return @intToPtr(*T, get_ptr: {
+            return @ptrFromInt(get_ptr: {
                 if (offset > 0) {
-                    break :get_ptr @ptrToInt(this.host_ptr) + @intCast(usize, offset);
+                    break :get_ptr @intFromPtr(this.host_ptr) + @as(usize, @intCast(offset));
                 } else {
-                    break :get_ptr @ptrToInt(this.host_ptr) - @intCast(usize, -offset);
+                    break :get_ptr @intFromPtr(this.host_ptr) - @as(usize, @intCast(-offset));
                 }
             });
         }
@@ -342,7 +341,7 @@ pub fn SandboxPtr(comptime T: type) type {
             struct {
                 /// NOT SAFETY CHECKED.
                 pub fn slice(this: Self, len: u32) callconv(.Inline) []T {
-                    return @ptrCast([*]u8, this.host_ptr)[0..@intCast(usize, len)];
+                    return @as([*]u8, @ptrCast(this.host_ptr))[0..@intCast(len)];
                 }
             }
         else
@@ -356,13 +355,13 @@ fn fromLocalPtr(comptime T: type, localptr: u32, local_heap: usize) T {
         if (localptr == 0) return null;
         return Child{
             .local_heap = local_heap,
-            .host_ptr = @intToPtr(*Child.Base, local_heap + @intCast(usize, localptr)),
+            .host_ptr = @ptrFromInt(local_heap + @as(usize, @intCast(localptr))),
         };
     } else if (comptime isSandboxPtr(T)) {
         std.debug.assert(localptr != 0);
         return T{
             .local_heap = local_heap,
-            .host_ptr = @intToPtr(*T.Base, local_heap + @intCast(usize, localptr)),
+            .host_ptr = @ptrFromInt(local_heap + @as(usize, @intCast(localptr))),
         };
     } else {
         @compileError("Expected a SandboxPtr or a ?SandboxPtr, got " ++ @typeName(T));
@@ -406,8 +405,8 @@ pub const Module = struct {
             return '*';
         }
         switch (@typeInfo(T)) {
-            .Pointer => |ptrti| {
-                if (ptrti.size == .One) {
+            .pointer => |ptrti| {
+                if (ptrti.size == .one) {
                     @compileError("Please use a wasm3.SandboxPtr instead of raw pointers!");
                 }
             },
@@ -427,15 +426,15 @@ pub const Module = struct {
     ///           Not accessible from within wasm, handled by the interpreter.
     ///           If you don't want userdata, pass a void literal {}.
     pub fn linkLibrary(this: Module, library_name: [:0]const u8, comptime library: type, userdata: anytype) !void {
-        inline for (@typeInfo(library).Struct.decls) |decl| {
-            if (decl.is_pub) {
-                    const fn_name_z = comptime get_name: {
-                        var name_buf: [decl.name.len:0]u8 = undefined;
-                        std.mem.copy(u8, &name_buf, decl.name);
-                        break :get_name name_buf;
-                    };
-                    try this.linkRawFunction(library_name, &fn_name_z, @field(library, decl.name), userdata);
-            }
+        inline for (@typeInfo(library).@"struct".decls) |decl| {
+            // if (decl.is_pub) {
+                const fn_name_z = comptime get_name: {
+                    var name_buf: [decl.name.len:0]u8 = undefined;
+                    std.mem.copyForwards(u8, &name_buf, decl.name);
+                    break :get_name name_buf;
+                };
+                try this.linkRawFunction(library_name, &fn_name_z, @field(library, decl.name), userdata);
+            // }
         }
     }
 
@@ -453,12 +452,12 @@ pub const Module = struct {
         errdefer {
             std.log.err("Failed to link proc {s}.{s}!\n", .{ library_name, function_name });
         }
-        comptime var has_userdata = @TypeOf(userdata) != void;
+        const has_userdata = @TypeOf(userdata) != void;
         comptime validate_userdata: {
             if (has_userdata) {
                 switch (@typeInfo(@TypeOf(userdata))) {
-                    .Pointer => |ptrti| {
-                        if (ptrti.size == .One) {
+                    .pointer => |ptrti| {
+                        if (ptrti.size == .one) {
                             break :validate_userdata;
                         }
                     },
@@ -470,17 +469,17 @@ pub const Module = struct {
         const UserdataType = @TypeOf(userdata);
         const sig = comptime generate_signature: {
             switch (@typeInfo(@TypeOf(function))) {
-                .Fn => |fnti| {
+                .@"fn" => |fnti| {
                     const sub_data = if (has_userdata) 1 else 0;
-                    var arg_str: [fnti.args.len + 3 - sub_data:0]u8 = undefined;
+                    var arg_str: [fnti.params.len + 3 - sub_data:0]u8 = undefined;
                     arg_str[0] = mapTypeToChar(fnti.return_type orelse void);
                     arg_str[1] = '(';
                     arg_str[arg_str.len - 1] = ')';
-                    for (fnti.args[sub_data..]) |arg, i| {
+                    for (fnti.params[sub_data..], 0..) |arg, i| {
                         if (arg.is_generic) {
                             @compileError("WASM does not support generic arguments to native functions!");
                         }
-                        arg_str[2 + i] = mapTypeToChar(arg.arg_type.?);
+                        arg_str[2 + i] = mapTypeToChar(arg.type.?);
                     }
                     break :generate_signature arg_str;
                 },
@@ -495,56 +494,56 @@ pub const Module = struct {
                     type_arr = type_arr ++ @as([]const type, &[1]type{UserdataType});
                 }
                 std.debug.assert(_mem != null);
-                var mem = @ptrToInt(_mem);
-                var stack = @ptrToInt(sp);
+                const mem = @intFromPtr(_mem);
+                var stack = @intFromPtr(sp);
                 const stride = @sizeOf(u64) / @sizeOf(u8);
 
                 switch (@typeInfo(@TypeOf(function))) {
-                    .Fn => |fnti| {
+                    .@"fn" => |fnti| {
                         const RetT = fnti.return_type orelse void;
 
-                        comptime var return_pointer = isSandboxPtr(RetT) or isOptSandboxPtr(RetT);
+                        const return_pointer = comptime (isSandboxPtr(RetT) or isOptSandboxPtr(RetT));
 
                         const RetPtr = comptime if (RetT == void) void else if (return_pointer) *u32 else *RetT;
                         var ret_val: RetPtr = undefined;
                         if (RetT != void) {
-                            ret_val = @intToPtr(RetPtr, stack);
+                            ret_val = @ptrFromInt(stack);
                             stack += stride;
                         }
 
                         const sub_data = if (has_userdata) 1 else 0;
-                        inline for (fnti.args[sub_data..]) |arg| {
+                        inline for (fnti.params[sub_data..]) |arg| {
 
                             if (arg.is_generic) unreachable;
-                            type_arr = type_arr ++ @as([]const type, &[1]type{arg.arg_type.?});
+                            type_arr = type_arr ++ @as([]const type, &[1]type{arg.type.?});
                         }
 
                         var args: std.meta.Tuple(type_arr) = undefined;
 
                         comptime var idx: usize = 0;
                         if (has_userdata) {
-                            args[idx] = @ptrCast(UserdataType, @alignCast(@alignOf(std.meta.Child(UserdataType)), import_ctx.userdata));
+                            args[idx] = @ptrCast(@alignCast(import_ctx.userdata));
                             idx += 1;
                         }
-                        inline for (fnti.args[sub_data..]) |arg| {
+                        inline for (fnti.params[sub_data..]) |arg| {
                             if (arg.is_generic) unreachable;
 
-                            const ArgT = arg.arg_type.?;
+                            const ArgT = arg.type.?;
 
                             if (comptime (isSandboxPtr(ArgT) or isOptSandboxPtr(ArgT))) {
-                                const vm_arg_addr: u32 = @intToPtr(*u32, stack).*;
+                                const vm_arg_addr: u32 = @as(*u32, @ptrFromInt(stack)).*;
                                 args[idx] = fromLocalPtr(ArgT, vm_arg_addr, mem);
                             } else {
-                                args[idx] = @intToPtr(*ArgT, stack).*;
+                                args[idx] = @as(*ArgT, @ptrFromInt(stack)).*;
                             }
                             idx += 1;
                             stack += stride;
                         }
 
                         if (RetT == void) {
-                            @call(.{ .modifier = .always_inline }, function, args);
+                            @call(.always_inline, function, args);
                         } else {
-                            const returned_value = @call(.{ .modifier = .always_inline }, function, args);
+                            const returned_value = @call(.always_inline, function, args);
                             if (return_pointer) {
                                 ret_val.* = toLocalPtr(returned_value);
                             } else {
@@ -643,7 +642,7 @@ pub const Environment = struct {
     pub fn setCustomSectionHandler(this: Environment, comptime handler: fn(module: Module, name: []const u8, bytes: []const u8) Error!void) callconv(.Inline) void {
         const handler_adapter = struct {
             pub fn l(module: c.IM3Module, name: [*:0]const u8, start: [*]const u8, end: *const u8) callconv(.C) c.M3Result {
-                var result = handler(.{.impl = module}, std.mem.span(name), start[0..(@ptrToInt(end) - @ptrToInt(start))]);
+                const result = handler(.{.impl = module}, std.mem.span(name), start[0..(@intFromPtr(end) - @intFromPtr(start))]);
                 return ErrorMapping.mapErrorReverse(result);
             }
         }.l;
@@ -654,7 +653,7 @@ pub const Environment = struct {
     }
     pub fn parseModule(this: Environment, wasm: []const u8) callconv(.Inline) !Module {
         var mod = Module{ .impl = undefined };
-        var res = c.m3_ParseModule(this.impl, &mod.impl, wasm.ptr, @intCast(u32, wasm.len));
+        const res = c.m3_ParseModule(this.impl, &mod.impl, wasm.ptr, @intCast(wasm.len));
         try ErrorMapping.mapError(res);
         return mod;
     }
@@ -679,8 +678,8 @@ pub fn printProfilerInfo() callconv(.Inline) void {
 pub usingnamespace if (builtin.target.abi.isGnu() and builtin.target.os.tag != .windows)
     struct {
         export fn getrandom(buf: [*c]u8, len: usize, _: c_uint) i64 {
-            std.os.getrandom(buf[0..len]) catch return 0;
-            return @intCast(i64, len);
+            std.posix.getrandom(buf[0..len]) catch return 0;
+            return @intCast(len);
         }
     }
 else

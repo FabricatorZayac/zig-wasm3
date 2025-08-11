@@ -6,10 +6,10 @@ extern "native_helpers" fn getArgv0(str_buf: [*]u8, max_len: u32) u32;
 const max_arg_size = 256;
 
 export fn allocBytes(size: u32) [*]u8 {
-    var mem = std.heap.page_allocator.alloc(u8, @intCast(usize, size)) catch {
+    const mem = std.heap.page_allocator.alloc(u8, @intCast(size)) catch {
         std.debug.panic("Memory allocation failed!\n", .{});
     };
-    for (mem) |*v, i| v.* = @intCast(u8, i);
+    for (mem, 0..) |*v, i| v.* = @intCast(i);
     return mem.ptr;
 }
 
@@ -40,9 +40,9 @@ export fn main() void {
     std.debug.print("{d} + {d} = {d} (multiplied, it's {d}!)\n", .{ a1, a2, add_res, mul_res });
 
     var buf = a.alloc(u8, max_arg_size) catch std.debug.panic("Memory allocation failed!\n", .{});
-    var written = getArgv0(buf.ptr, buf.len);
+    const written = getArgv0(buf.ptr, buf.len);
     if (written != 0) {
-        std.debug.print("Got string {s}!\n", .{buf[0..@intCast(usize, written)]});
+        std.debug.print("Got string {s}!\n", .{buf[0..@intCast(written)]});
     } else {
         std.debug.print("Failed to write string! No bytes written.", .{});
     }
